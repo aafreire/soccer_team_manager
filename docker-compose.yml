@@ -1,0 +1,61 @@
+version: '3.3'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: football_app
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    networks:
+      - football_network
+    depends_on:
+      - db
+    environment:
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - APP_KEY=base64:generated_key_here
+    command: >
+      sh -c "chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache &&
+             chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache &&
+             php-fpm"
+
+  webserver:
+    image: nginx:alpine
+    container_name: football_webserver
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+      - ./docker/nginx/conf.d/:/etc/nginx/conf.d/
+      - ./docker/nginx/snippets/:/etc/nginx/snippets/
+    ports:
+      - "8080:80"
+    networks:
+      - football_network
+    depends_on:
+      - app
+
+  db:
+    image: mysql:5.7
+    container_name: football_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: football
+      MYSQL_USER: football_user
+      MYSQL_PASSWORD: football_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - football_db_data:/var/lib/mysql/
+    networks:
+      - football_network
+
+networks:
+  football_network:
+    driver: bridge
+
+volumes:
+  football_db_data:
+    driver: local
