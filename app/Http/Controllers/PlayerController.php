@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Player;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class PlayerController extends Controller
 {
@@ -76,52 +77,87 @@ class PlayerController extends Controller
             return response()->json(['error' => 'Número insuficiente de jogadores confirmados para esta configuração de times.'], 400);
         }
 
-        $goalkeepers = $players->where('is_goalkeeper', true);
-        $fieldPlayers = $players->where('is_goalkeeper', false);
+        $goalkeepers = $players->where('is_goalkeeper', true)->shuffle();
+        $fieldPlayers = $players->where('is_goalkeeper', false)->shuffle();
 
         if ($goalkeepers->count() < $totalTeams) {
             return response()->json(['error' => 'Número insuficiente de goleiros para formar os times.'], 400);
         }
 
-        $goalkeepers = $goalkeepers->shuffle();
-        $fieldPlayers = $fieldPlayers->shuffle();
-
         $teams = [];
-        for ($i = 0; $i < $totalTeams; $i++) {
+        $reserves = [];
 
+        for ($i = 0; $i < $totalTeams; $i++) {
             $teams[$i] = [
                 'goalkeeper' => $goalkeepers->pop(),
-                'players' => $fieldPlayers->splice(0, $playersPerTeam - 1)
+                'players' => collect(),
+                'total_level' => 0,
             ];
         }
 
-        if ($fieldPlayers->isNotEmpty()) {
-            foreach ($fieldPlayers as $player) {
-                $teams[array_rand($teams)]['players']->push($player);
+        while ($fieldPlayers->isNotEmpty()) {
+            foreach ($teams as &$team) {
+                if ($team['players']->count() < $playersPerTeam - 1) {
+                    $player = $fieldPlayers->pop();
+                    if ($player) {
+                        $team['players']->push($player);
+                        $team['total_level'] += $player->level;
+                    }
+                } elseif ($fieldPlayers->isNotEmpty()) {
+                    $reserves[] = $fieldPlayers->pop();
+                }
             }
         }
 
         $response = [];
-        foreach ($teams as $team) {
+        foreach ($teams as $index => &$team) {
             $teamPlayers = $team['players']->prepend($team['goalkeeper']);
-            $response[] = $teamPlayers->all();
+            $response['teams'][] = $teamPlayers->all();
         }
+
+        if (!empty($reserves)) {
+            $response['reserves'] = $reserves;
+        }
+
+        $this->saveTeamSelection($teams, $reserves);
 
         return response()->json($response);
     }
 
-    private function generateTeams($players, $playersPerTeam)
+    private function saveTeamSelection($teams, $reserves)
     {
-        $goalkeepers = $players->where('is_goalkeeper', true);
-        $fieldPlayers = $players->where('is_goalkeeper', false);
+        $selectionTimestamp = now();
+        $gameDate = now()->toDateString();
 
-        $teams = [];
-        while ($fieldPlayers->count() >= $playersPerTeam - 1 && $goalkeepers->count() > 0) {
-            $team = $goalkeepers->shift();
-            $team->players = $fieldPlayers->splice(0, $playersPerTeam - 1);
-            $teams[] = $team;
-        }
+        DB::transaction(function () use ($teams, $reserves, $selectionTimestamp, $gameDate) {
+            foreach ($teams as $index => $team) {
+                $teamAverageLevel = round($team['total_level'] / ($team['players']->count() + 1), 2);
+                foreach ($team['players'] as $player) {
+                    DB::table('team_selections')->insert([
+                        'player_id' => $player->id,
+                        'game_date' => $gameDate,
+                        'team_average_level' => $teamAverageLevel,
+                        'selection_id' => $selectionTimestamp,
+                        'team_index' => $index + 1,
+                        'is_reserve' => false,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+            }
 
-        return $teams;
+            foreach ($reserves as $reserve) {
+                DB::table('team_selections')->insert([
+                    'player_id' => $reserve->id,
+                    'game_date' => $gameDate,
+                    'team_average_level' => 0,
+                    'selection_id' => $selectionTimestamp,
+                    'team_index' => 0,
+                    'is_reserve' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+        });
     }
 }
